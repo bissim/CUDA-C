@@ -1,5 +1,6 @@
 #!/bin/bash
-if [ "$1" = "" ] || [ "$2" = "" ] || [ "$3" = "" ] || [ "$4" = "" ] || [ "$5" = "" ] || [ "$6" = "" ]; then
+if [ $# -lt 7 ]; then
+    echo "Only $# parameters specified!"
     echo "Use of script: $0 <sourceFileName> <binaryFileName> <numThreads> <numberOfValues> <iterations> <outputFileName> <printFlag>"
     exit
 fi
