@@ -87,7 +87,7 @@ int main(int argn, char * argv[]) {
     //copia dei risultati dal device all'host
     cudaMemcpy(copy,C_device,size, cudaMemcpyDeviceToHost);
 
-    printf("tempo GPU: %f\n", elapsed);
+    printf("tempo GPU: %.3f\n", elapsed);
 
     // calcolo su CPU
     cudaEventCreate(&start);
@@ -101,7 +101,7 @@ int main(int argn, char * argv[]) {
     cudaEventElapsedTime(&elapsed, start, stop);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    printf("tempo CPU: %f\n", elapsed);
+    printf("tempo CPU: %.3f\n", elapsed);
 
 
     //stampa degli array e dei risultati

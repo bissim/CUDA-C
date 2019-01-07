@@ -2,7 +2,7 @@
 #include <cuda.h>
 #include <time.h>
 
-#include "cuPrintf.cu"
+#include "../cuPrintf.cu"
 
 #define NANOSECONDS_PER_SECOND 1E9;
 
@@ -25,8 +25,8 @@ int main(int argc, char *argv[]) {
 	int num;
 	int host_sum, device_sum;
     int flag, errorFlag;
-    cudaEvent_t start, stop; // tempi di inizio e fine
-    float elapsed, elapsedCPU;
+    cudaEvent_t startGPU, stopGPU; // tempi di inizio e fine
+    float elapsedGPU, elapsedCPU;
 	struct timespec startCPU, stopCPU;
 	// const long NANOSECONDS_PER_SECOND = 1E9;
 	const int MS_IN_S = 1000;
@@ -84,19 +84,19 @@ int main(int argc, char *argv[]) {
 	cudaMemset(C_device, 0, size);
 
     // avvia cronometrazione GPU
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    cudaEventCreate(&startGPU);
+    cudaEventCreate(&stopGPU);
 
 	// invocazione del kernel
-	cudaEventRecord(start);
+	cudaEventRecord(startGPU);
 	prodottoArrayCompPerCompGPU<<<gridDim, blockDim>>>(A_device, B_device, C_device, N);
-	cudaEventRecord(stop);
+	cudaEventRecord(stopGPU);
 
     // calcola il tempo impiegato dal device per l'esecuzione del kernel
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsed, start, stop);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    cudaEventSynchronize(stopGPU);
+    cudaEventElapsedTime(&elapsedGPU, startGPU, stopGPU);
+    cudaEventDestroy(startGPU);
+    cudaEventDestroy(stopGPU);
 
 	// copia dei risultati dal device all'host
 	cudaMemcpy(copy, C_device, size, cudaMemcpyDeviceToHost);
@@ -145,8 +145,8 @@ int main(int argc, char *argv[]) {
 		printf("Le somme non coincidono!");
 	}
 
-	printf("Tempo CPU: %f ms\n", elapsedCPU * MS_IN_S);
-    printf("Tempo GPU: %f ms\n", elapsed * MS_IN_S);
+	printf("Tempo CPU: %.3f ms\n", elapsedCPU * MS_IN_S);
+    printf("Tempo GPU: %.3f ms\n", elapsedGPU); // already in ms
 
 	// de-allocazione host
 	free(A_host);

@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <cuda.h>
 
-#include "cuPrintf.cu"
+#include "../cuPrintf.cu"
+
+#define NANOSECONDS_PER_SECOND 1E9;
 
 void initializeArray(int*, int);
 void stampaArray(int*, int);
@@ -26,21 +28,22 @@ int main(int argc, char *argv[]) {
 	int size, grid_size; // size in byte di ciascun array
     int host_sum, device_local_sum, shared_sum;
     int flag;
-    cudaEvent_t start, stop; // tempi di inizio e fine
-    float elapsed;
+    cudaEvent_t startGPU, stopGPU; // tempi di inizio e fine
+	struct timespec startCPU, stopCPU;
+    float elapsedGPU, elapsedGPUSum, elapsedCPU;
     int numResBlocks;
     int threadPerSM;
-    // const int NUM_SM = 16; // 16 for Fermi
+    const int NUM_SM = 16; // 16 for Fermi
     const int MAX_NUM_THREADS = 1536; // 1536 for Fermi, 2048 for Kepler
     const int MAX_NUM_BLOCKS = 8; // 8 for Fermi, 16 for Kepler
+	const int MS_IN_S = 1000;
 
-    printf("***\t PRODOTTO COMPONENTE PER COMPONENTE DI DUE ARRAY \t***\n");
     if (argc < 4) {
         printf("Numero di parametri insufficiente!\n");
         printf("Uso corretto: %s <NumElementi> <NumThreadPerBlocco> <flag per la Stampa>\n", argv[0]);
         printf("Uso dei valori di default\n");
-        N = 128;
-        num = 8;
+        N = 131072;
+        num = 32;
         flag = 0;
     }
     else {
@@ -48,31 +51,40 @@ int main(int argc, char *argv[]) {
         num = atoi(argv[2]);
         flag = atoi(argv[3]);
     }
-    printf("Taglia input: %d\nThread per blocco richiesti: %d\nStampa matrici (0 no, 1 sì): %1d\n", N, num, flag);
-	blockDim.x = num;
 
-    numResBlocks = MAX_NUM_THREADS / blockDim.x;
-    printf("Saranno impiegati %d blocchi di thread.\n", numResBlocks);
-    printf("Saranno usati %d streaming multiprocessor.\n", numResBlocks / MAX_NUM_BLOCKS); // TODO controllare
-    threadPerSM = blockDim.x * MAX_NUM_BLOCKS;
-    if (threadPerSM == MAX_NUM_THREADS) {
-        printf("Uso ottimale degli SM!\n");
+    if (flag) {
+        printf("***\t PRODOTTO COMPONENTE PER COMPONENTE DI DUE ARRAY \t***\n");
+        printf("Thread per blocco richiesti: %d\nStampa matrici (0 no, 1 sì): %1d\n", N, num, flag);
     }
-    else {
-        printf("Saranno usati solo %d thread su %d per ogni SM!\n", threadPerSM, MAX_NUM_THREADS);
+
+    printf("Taglia input: %d\n", N);
+
+    blockDim.x = num;
+    numResBlocks = MAX_NUM_THREADS / blockDim.x;
+    threadPerSM = blockDim.x * MAX_NUM_BLOCKS;
+    if (flag) {
+        printf("Saranno impiegati %d blocchi di thread.\n", numResBlocks);
+        printf("Saranno usati %d streaming multiprocessor su %d.\n", numResBlocks / MAX_NUM_BLOCKS, NUM_SM); // TODO controllare
+        if (threadPerSM == MAX_NUM_THREADS) {
+            printf("Uso ottimale degli SM!\n");
+        }
+        else {
+            printf("Saranno usati solo %d thread su %d per ogni SM!\n", threadPerSM, MAX_NUM_THREADS);
+        }
     }
 
 	// determinazione esatta del numero di blocchi (bilanciamento)
 	gridDim.x = N / blockDim.x + ((N % blockDim.x) == 0? 0: 1); // load balancing, punto terzo
-	// size in byte di ogni array
-	size = sizeof(int) * N;
 
     // stampa delle info sull'esecuzione del kernel
-	printf("Numero di elementi = %d\n", N);
-	printf("Numero di thread per blocco = %d\n", blockDim.x);
-	printf("Numero di blocchi = %d\n", gridDim.x);
+    if (flag) {
+        printf("Numero di elementi = %d\n", N);
+        printf("Numero di thread per blocco = %d\n", blockDim.x);
+        printf("Numero di blocchi = %d\n", gridDim.x);
+    }
 
     // allocazione dati sull'host
+	size = sizeof(int) * N; // size in byte di ogni array
 	A_host = (int *) malloc(size);
 	B_host = (int *) malloc(size);
 	C_host = (int *) malloc(size);
@@ -95,28 +107,33 @@ int main(int argc, char *argv[]) {
 	memset(C_host, 0, size);
 	cudaMemset(C_device, 0, size);
 
+    // chiamata alla funzione seriale per il prodotto di due array
+	clock_gettime(CLOCK_REALTIME, &startCPU);
+	dotProdCPU(A_host, B_host, C_host, N);
+	clock_gettime(CLOCK_REALTIME, &stopCPU);
+	elapsedCPU = (stopCPU.tv_sec - startCPU.tv_sec) + (stopCPU.tv_nsec - startCPU.tv_nsec) / NANOSECONDS_PER_SECOND;
+
+    printf("Tempo CPU: %.3f ms\n", elapsedCPU * MS_IN_S);
+
     printf("\nI STRATEGIA\n");
 
     // avvia cronometrazione GPU
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    cudaEventCreate(&startGPU);
+    cudaEventCreate(&stopGPU);
 
     // invocazione del kernel
-    cudaEventRecord(start);
+    cudaEventRecord(startGPU);
     dotProdGPU<<<gridDim, blockDim>>>(A_device, B_device, C_device, N);
-    cudaEventRecord(stop);
+    cudaEventRecord(stopGPU);
 
     // calcola il tempo impiegato dal device per l'esecuzione del kernel
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsed, start, stop);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    cudaEventSynchronize(stopGPU);
+    cudaEventElapsedTime(&elapsedGPU, startGPU, stopGPU);
+    cudaEventDestroy(startGPU);
+    cudaEventDestroy(stopGPU);
 
     // copia dei risultati dal device all'host
 	cudaMemcpy(copy, C_device, size, cudaMemcpyDeviceToHost);
-
-    // chiamata alla funzione seriale per il prodotto di due array
-	dotProdCPU(A_host, B_host, C_host, N);
 
     // stampa degli array e dei risultati
 	if (flag == 1) {
@@ -135,20 +152,31 @@ int main(int argc, char *argv[]) {
 	host_sum = device_local_sum = 0;
 	for (i = 0; i < N; i++) {
 		host_sum += C_host[i];
+    }
+	clock_gettime(CLOCK_REALTIME, &startCPU);
+	for (i = 0; i < N; i++) {
 		device_local_sum += copy[i];
-	}
+    }
+    clock_gettime(CLOCK_REALTIME, &stopCPU);
 
-	// confronta i risultati
-	printf("La somma sul device (%d) ", device_local_sum);
-	if (host_sum != device_local_sum) {
-		printf("non ");
-	}
-	printf("coincide con la somma sull'host (%d)!\n", host_sum);
-    printf("Tempo GPU per I strategia: %f\n", elapsed);
+    // includi il tempo di addizione CPU
+    elapsedGPUSum = (stopCPU.tv_sec - startCPU.tv_sec) + (stopCPU.tv_nsec - startCPU.tv_nsec) / NANOSECONDS_PER_SECOND;
+    elapsedGPU += (elapsedGPUSum * MS_IN_S);
+
+    // confronta i risultati
+    if (flag) {
+        printf("La somma sul device (%d) ", device_local_sum);
+        if (host_sum != device_local_sum) {
+            printf("non ");
+        }
+        printf("coincide con la somma sull'host (%d)!\n", host_sum);
+    }
+
+    printf("Tempo GPU: %.3f\n", elapsedGPU);
 
     // Seconda strategia in shared memory
     printf("\nII STRATEGIA\n");
-    grid_size = gridDim.x * sizeof(int);
+    grid_size = sizeof (int) * gridDim.x;
 
     // azzeriamo il contenuto della matrice C e della variabile somma
     cudaFree(C_device);
@@ -159,24 +187,28 @@ int main(int argc, char *argv[]) {
     sharedSums = (int *) calloc(N, sizeof(int));
 
     // avvia cronometrazione GPU
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    cudaEventCreate(&startGPU);
+    cudaEventCreate(&stopGPU);
 
     // invocazione del kernel
-    cudaPrintfInit();
-    cudaEventRecord(start);
+    if (flag) {
+        cudaPrintfInit();
+    }
+    cudaEventRecord(startGPU);
     // dotProdGPU<<<gridDim, blockDim>>>(A_device, B_device, C_device, N); // prodotto
     // reduce1<<<gridDim, blockDim, blockDim.x * sizeof(int)>>>(C_device, C_device); // somma 2 strategia
     dotProdGPUShared1<<<gridDim, blockDim, blockDim.x * sizeof(int)>>>(A_device, B_device, C_device, N);
-    cudaEventRecord(stop);
-    cudaPrintfDisplay();
-    cudaPrintfEnd();
+    cudaEventRecord(stopGPU);
+    if (flag) {
+        cudaPrintfDisplay();
+        cudaPrintfEnd();
+    }
 
     // calcola il tempo impiegato dal device per l'esecuzione del kernel
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsed, start, stop);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    cudaEventSynchronize(stopGPU);
+    cudaEventElapsedTime(&elapsedGPU, startGPU, stopGPU);
+    cudaEventDestroy(startGPU);
+    cudaEventDestroy(stopGPU);
 
     // copia dei risultati dal device all'host
 	cudaMemcpy(sharedSums, C_device, grid_size, cudaMemcpyDeviceToHost);
@@ -202,14 +234,17 @@ int main(int argc, char *argv[]) {
     }
 
     // confronta i risultati
-	printf("La somma sul device (%d) ", shared_sum);
-	if (host_sum != shared_sum) {
-		printf("non ");
-	}
-	printf("coincide con la somma sull'host (%d)!\n", host_sum);
-    printf("Tempo GPU per II strategia: %f\n", elapsed);
+    if (flag) {
+        printf("La somma sul device (%d) ", shared_sum);
+        if (host_sum != shared_sum) {
+            printf("non ");
+        }
+        printf("coincide con la somma sull'host (%d)!\n", host_sum);
+    }
 
-    // Seconda strategia in shared memory
+    printf("Tempo GPU: %.3f\n", elapsedGPU);
+
+    // terza strategia
     printf("\nIII STRATEGIA\n");
 
     // azzeriamo il contenuto della matrice C e della variabile somma
@@ -219,21 +254,21 @@ int main(int argc, char *argv[]) {
     memset(sharedSums, 0, size);
 
     // avvia cronometrazione GPU
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    cudaEventCreate(&startGPU);
+    cudaEventCreate(&stopGPU);
 
     // invocazione del kernel
-    cudaEventRecord(start);
+    cudaEventRecord(startGPU);
     // dotProdGPU<<<gridDim, blockDim>>>(A_device, B_device, C_device, N); // prodotto
     // reduce2<<<gridDim, blockDim, blockDim.x * sizeof(int)>>>(C_device, C_device); // somma 3 strategia
     dotProdGPUShared2<<<gridDim, blockDim, blockDim.x * sizeof(int)>>>(A_device, B_device, C_device, N);
-    cudaEventRecord(stop);
+    cudaEventRecord(stopGPU);
 
     // calcola il tempo impiegato dal device per l'esecuzione del kernel
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsed, start, stop);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    cudaEventSynchronize(stopGPU);
+    cudaEventElapsedTime(&elapsedGPU, startGPU, stopGPU);
+    cudaEventDestroy(startGPU);
+    cudaEventDestroy(stopGPU);
 
     // copia dei risultati dal device all'host
 	cudaMemcpy(sharedSums, C_device, grid_size, cudaMemcpyDeviceToHost);
@@ -259,12 +294,15 @@ int main(int argc, char *argv[]) {
     }
 
     // confronta i risultati
-	printf("La somma sul device (%d) ", shared_sum);
-	if (host_sum != shared_sum) {
-		printf("non ");
-	}
-	printf("coincide con la somma sull'host (%d)!\n", host_sum);
-    printf("Tempo GPU per III strategia: %f\n", elapsed);
+    if (flag) {
+        printf("La somma sul device (%d) ", shared_sum);
+        if (host_sum != shared_sum) {
+            printf("non ");
+        }
+        printf("coincide con la somma sull'host (%d)!\n", host_sum);
+    }
+
+    printf("Tempo GPU: %.3f\n", elapsedGPU);
 
     // de-allocazione host
 	free(A_host);
@@ -278,8 +316,11 @@ int main(int argc, char *argv[]) {
     cudaFree(B_device);
     cudaFree(C_device);
 
-    printf("\nFine programma %s.\n", argv[0]);
-	exit(EXIT_SUCCESS);
+    if (flag) {
+        printf("\nFine programma %s.\n", argv[0]);
+    }
+
+    return EXIT_SUCCESS;
 }
 
 void initializeArray(int *array, int n) {
